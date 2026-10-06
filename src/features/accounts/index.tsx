@@ -1,59 +1,65 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus, Shield, ShieldCheck, Trash2, Users } from 'lucide-react'
+import {
+  Boxes,
+  CircleUserRound,
+  KeyRound,
+  Plus,
+  Shield,
+  ShieldCheck,
+  Trash2,
+  Users,
+} from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
-import { NodeEmpty, useNodeReady } from '@/components/node-guard'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { ConfirmDialog, Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { EmptyState, ErrorState, Label, LoadingState, Switch } from '@/components/ui/misc'
+import { Checkbox, EmptyState, Label, LoadingState, Switch } from '@/components/ui/misc'
 import {
-  changePassword,
-  createAccount,
-  deleteAccount,
-  getAccounts,
-  getPermCatalog,
-  setAccountPermissions,
-  type AccountInfo,
-} from '@/lib/api'
-import { useAuthStore } from '@/stores/auth-store'
+  addUser,
+  changeLocalPassword,
+  listUsers,
+  removeUser,
+  updateUserInstances,
+  updateUserRole,
+  type LocalUser,
+} from '@/lib/local-auth'
+import { usePanelAuthStore } from '@/stores/panel-auth-store'
 import { formatTime } from '@/lib/utils'
+import { useQuery } from '@tanstack/react-query'
+import { getInstances } from '@/lib/api'
+import { useNodeReady } from '@/components/node-guard'
 
 export function AccountsPage() {
-  const ready = useNodeReady()
-  const auth = useAuthStore()
-  const queryClient = useQueryClient()
+  const panelUser = usePanelAuthStore((s) => s.user)
   const [createOpen, setCreateOpen] = useState(false)
   const [passwordOpen, setPasswordOpen] = useState(false)
-  const [permTarget, setPermTarget] = useState<AccountInfo | null>(null)
-  const [deleteTarget, setDeleteTarget] = useState<AccountInfo | null>(null)
+  const [assignTarget, setAssignTarget] = useState<LocalUser | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<LocalUser | null>(null)
 
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['accounts'],
-    queryFn: getAccounts,
-    retry: false,
-    enabled: ready,
-  })
+  const users = listUsers()
 
-  const deleteMutation = useMutation({
-    mutationFn: (username: string) => deleteAccount(username),
-    onSuccess: () => {
-      toast.success('账户已删除')
+  const handleDelete = () => {
+    if (!deleteTarget) return
+    try {
+      removeUser(deleteTarget.username)
+      toast.success(`用户「${deleteTarget.username}」已删除`)
       setDeleteTarget(null)
-      queryClient.invalidateQueries({ queryKey: ['accounts'] })
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : '删除失败'),
-  })
+      // 触发重新渲染
+      usePanelAuthStore.setState({})
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '删除失败')
+    }
+  }
 
-  // 非管理员只能改自己的密码
-  if (!auth.isAdmin) {
+  // 非管理员只能改自己密码
+  if (!panelUser?.isAdmin) {
     return (
       <div className='space-y-4'>
         <div>
           <h1 className='text-2xl font-bold tracking-tight'>账户</h1>
-          <p className='text-sm text-muted-foreground'>当前账户：{auth.username}</p>
+          <p className='text-sm text-muted-foreground'>当前账户：{panelUser?.username}</p>
         </div>
         <ChangePasswordCard />
       </div>
@@ -63,210 +69,228 @@ export function AccountsPage() {
   return (
     <div className='space-y-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
-        <div>
-          <h1 className='text-2xl font-bold tracking-tight'>账户管理</h1>
-          <p className='text-sm text-muted-foreground'>管理节点账户与端点权限</p>
+        <div className='flex items-center gap-2'>
+          <Users className='size-5 text-primary' />
+          <div>
+            <h1 className='text-2xl font-bold tracking-tight'>面板用户管理</h1>
+            <p className='text-sm text-muted-foreground'>
+              管理本机面板的用户账户；普通用户只能使用被分配的实例
+            </p>
+          </div>
         </div>
-        <div className='flex gap-2'>
-          <Button variant='outline' size='sm' onClick={() => setPasswordOpen(true)}>
-            <KeyRound />
-            修改我的密码
-          </Button>
-          <Button size='sm' onClick={() => setCreateOpen(true)}>
-            <Plus />
-            新建账户
-          </Button>
-        </div>
+        <Button size='sm' onClick={() => setCreateOpen(true)}>
+          <Plus />
+          添加用户
+        </Button>
       </div>
 
-      {!ready ? (
+      {users.length === 0 ? (
         <Card>
           <CardContent>
-            <NodeEmpty />
-          </CardContent>
-        </Card>
-      ) : isLoading ? (
-        <LoadingState />
-      ) : error ? (
-        <Card>
-          <CardContent className='p-0'>
-            <ErrorState
-              message={error instanceof Error ? error.message : '账户系统未启用'}
-              onRetry={() => refetch()}
-            />
-          </CardContent>
-        </Card>
-      ) : !data || data.length === 0 ? (
-        <Card>
-          <CardContent className='p-0'>
-            <EmptyState icon={<Users className='size-10' />} title='暂无账户' />
+            <EmptyState icon={<Users className='size-10' />} title='暂无用户' />
           </CardContent>
         </Card>
       ) : (
         <div className='grid gap-3'>
-          {data.map((account) => (
-            <Card key={account.username}>
-              <CardContent className='flex flex-wrap items-center gap-4 p-4'>
-                <div className='flex size-10 items-center justify-center rounded-lg bg-primary/10'>
-                  {account.isAdmin ? (
-                    <ShieldCheck className='size-5 text-primary' />
-                  ) : (
-                    <Shield className='size-5 text-muted-foreground' />
-                  )}
-                </div>
-                <div className='min-w-0 flex-1'>
-                  <div className='flex flex-wrap items-center gap-2'>
-                    <span className='font-semibold'>{account.username}</span>
-                    {account.isAdmin && <Badge>管理员</Badge>}
-                    {account.builtin && <Badge variant='secondary'>内置</Badge>}
-                    {account.mustChangePassword && (
-                      <Badge variant='warning'>需改密</Badge>
-                    )}
-                  </div>
-                  {account.createdAt ? (
-                    <p className='mt-0.5 text-xs text-muted-foreground'>
-                      创建于 {formatTime(account.createdAt)}
-                    </p>
-                  ) : null}
-                </div>
-                <div className='flex items-center gap-1'>
-                  {!account.isAdmin && (
-                    <Button variant='outline' size='sm' onClick={() => setPermTarget(account)}>
-                      权限
-                    </Button>
-                  )}
-                  {!account.builtin && (
-                    <Button
-                      variant='ghost'
-                      size='sm'
-                      className='text-muted-foreground hover:text-destructive'
-                      onClick={() => setDeleteTarget(account)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+          {users.map((u) => (
+            <UserCard
+              key={u.username}
+              user={u}
+              isCurrentUser={u.username === panelUser.username}
+              onAssign={() => setAssignTarget(u)}
+              onDelete={() => setDeleteTarget(u)}
+            />
           ))}
         </div>
       )}
 
-      <CreateAccountDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />
       <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
-      {permTarget && (
-        <PermissionsDialog
-          account={permTarget}
-          open={permTarget !== null}
-          onOpenChange={(open) => !open && setPermTarget(null)}
+      {assignTarget && (
+        <AssignInstancesDialog
+          user={assignTarget}
+          open={assignTarget !== null}
+          onOpenChange={(open) => !open && setAssignTarget(null)}
         />
       )}
       <ConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-        title='删除账户'
-        description={`确定要删除账户「${deleteTarget?.username}」吗？该账户的所有会话将立即失效。`}
+        title='删除用户'
+        description={`确定要删除用户「${deleteTarget?.username}」吗？该用户将无法再登录面板。`}
         confirmText='删除'
         destructive
-        loading={deleteMutation.isPending}
-        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget.username)}
+        onConfirm={handleDelete}
       />
     </div>
   )
 }
 
-// ---------- 修改密码（独立卡片，供非管理员使用） ----------
-export function ChangePasswordCard() {
-  const [oldPassword, setOldPassword] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [confirm, setConfirm] = useState('')
+// ---------- 用户卡片 ----------
+function UserCard(props: {
+  user: LocalUser
+  isCurrentUser: boolean
+  onAssign: () => void
+  onDelete: () => void
+}) {
+  const { user, isCurrentUser } = props
+  const [editingRole, setEditingRole] = useState(false)
 
-  const mutation = useMutation({
-    mutationFn: () => changePassword(oldPassword, newPassword),
-    onSuccess: () => {
-      toast.success('密码已修改')
-      setOldPassword('')
-      setNewPassword('')
-      setConfirm('')
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : '修改失败'),
-  })
+  const handleRoleChange = (isAdmin: boolean) => {
+    try {
+      updateUserRole(user.username, isAdmin)
+      toast.success(`${user.username} 角色已更新为${isAdmin ? '管理员' : '普通用户'}`)
+      usePanelAuthStore.setState({})
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '更新失败')
+    }
+    setEditingRole(false)
+  }
 
   return (
-    <Card className='max-w-md'>
-      <CardHeader>
-        <CardTitle className='text-base'>修改密码</CardTitle>
-        <CardDescription>修改当前登录账户的密码</CardDescription>
-      </CardHeader>
-      <CardContent className='space-y-4'>
-        <div className='space-y-1.5'>
-          <Label>旧密码</Label>
-          <Input type='password' value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
-        </div>
-        <div className='space-y-1.5'>
-          <Label>新密码</Label>
-          <Input type='password' value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
-        </div>
-        <div className='space-y-1.5'>
-          <Label>确认新密码</Label>
-          <Input type='password' value={confirm} onChange={(e) => setConfirm(e.target.value)} />
-        </div>
-        <Button
-          className='w-full'
-          disabled={!oldPassword || !newPassword || newPassword !== confirm || mutation.isPending}
-          onClick={() => mutation.mutate()}
+    <Card>
+      <CardContent className='flex flex-wrap items-center gap-4 p-4'>
+        <div
+          className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${
+            user.isAdmin ? 'bg-primary/10' : 'bg-muted'
+          }`}
         >
-          {mutation.isPending ? '提交中…' : '修改密码'}
-        </Button>
-        {newPassword && newPassword !== confirm && (
-          <p className='text-xs text-destructive'>两次输入的新密码不一致</p>
-        )}
+          {user.isAdmin ? (
+            <ShieldCheck className='size-5 text-primary' />
+          ) : (
+            <Shield className='size-5 text-muted-foreground' />
+          )}
+        </div>
+
+        <div className='min-w-0 flex-1'>
+          <div className='flex flex-wrap items-center gap-2'>
+            <CircleUserRound className='size-4 text-muted-foreground' />
+            <span className='font-semibold'>{user.username}</span>
+            {user.isAdmin ? (
+              <Badge>管理员</Badge>
+            ) : (
+              <Badge variant='secondary'>普通用户</Badge>
+            )}
+            {isCurrentUser && <Badge variant='outline'>当前登录</Badge>}
+          </div>
+          <p className='mt-1 text-xs text-muted-foreground'>
+            创建于 {formatTime(user.createdAt)}
+            {!user.isAdmin && user.assignedInstances !== undefined && (
+              <span className='ml-2'>
+                · 已分配 {user.assignedInstances.length} 个实例
+              </span>
+            )}
+          </p>
+        </div>
+
+        <div className='flex items-center gap-1'>
+          {!user.isAdmin && (
+            <Button variant='outline' size='sm' onClick={props.onAssign}>
+              <Boxes />
+              分配实例
+            </Button>
+          )}
+          {!editingRole ? (
+            <Button
+              variant='ghost'
+              size='sm'
+              onClick={() => setEditingRole(true)}
+              disabled={isCurrentUser}
+              title={isCurrentUser ? '不能修改自己的角色' : ''}
+            >
+              切换角色
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant='outline'
+                size='xs'
+                onClick={() => handleRoleChange(true)}
+              >
+                设为管理员
+              </Button>
+              <Button
+                variant='outline'
+                size='xs'
+                onClick={() => handleRoleChange(false)}
+              >
+                设为普通用户
+              </Button>
+              <Button variant='ghost' size='xs' onClick={() => setEditingRole(false)}>
+                取消
+              </Button>
+            </>
+          )}
+          <Button
+            variant='ghost'
+            size='sm'
+            className='text-muted-foreground hover:text-destructive'
+            disabled={isCurrentUser}
+            onClick={props.onDelete}
+            title={isCurrentUser ? '不能删除自己' : ''}
+          >
+            <Trash2 />
+          </Button>
+        </div>
       </CardContent>
     </Card>
   )
 }
 
-function ChangePasswordDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  return (
-    <Dialog open={props.open} onOpenChange={props.onOpenChange} title='修改我的密码'>
-      <ChangePasswordCard />
-    </Dialog>
-  )
-}
-
-// ---------- 新建账户 ----------
-function CreateAccountDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const queryClient = useQueryClient()
+// ---------- 创建用户 ----------
+function CreateUserDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
   const [isAdmin, setIsAdmin] = useState(false)
+  const [loading, setLoading] = useState(false)
 
-  const mutation = useMutation({
-    mutationFn: () => createAccount({ username: username.trim(), password, isAdmin }),
-    onSuccess: () => {
-      toast.success('账户已创建')
-      queryClient.invalidateQueries({ queryKey: ['accounts'] })
+  const reset = () => {
+    setUsername('')
+    setPassword('')
+    setConfirm('')
+    setIsAdmin(false)
+  }
+
+  const handleSubmit = async () => {
+    if (!username.trim()) {
+      toast.error('请输入用户名')
+      return
+    }
+    if (password.length < 8) {
+      toast.error('密码至少 8 位')
+      return
+    }
+    if (password !== confirm) {
+      toast.error('两次输入的密码不一致')
+      return
+    }
+    setLoading(true)
+    try {
+      await addUser(username.trim(), password, isAdmin)
+      toast.success(`用户「${username.trim()}」已创建`)
+      usePanelAuthStore.setState({})
+      reset()
       props.onOpenChange(false)
-      setUsername('')
-      setPassword('')
-      setIsAdmin(false)
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : '创建失败'),
-  })
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '创建失败')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   return (
     <Dialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title='新建账户'
+      title='添加用户'
       footer={
         <>
-          <Button variant='outline' onClick={() => props.onOpenChange(false)}>取消</Button>
-          <Button
-            disabled={!username.trim() || !password || mutation.isPending}
-            onClick={() => mutation.mutate()}
-          >
-            创建
+          <Button variant='outline' onClick={() => props.onOpenChange(false)}>
+            取消
+          </Button>
+          <Button disabled={loading} onClick={handleSubmit}>
+            {loading ? '创建中…' : '创建'}
           </Button>
         </>
       }
@@ -278,12 +302,32 @@ function CreateAccountDialog(props: { open: boolean; onOpenChange: (open: boolea
         </div>
         <div className='space-y-1.5'>
           <Label>密码</Label>
-          <Input type='password' value={password} onChange={(e) => setPassword(e.target.value)} />
+          <Input
+            type='password'
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          {password.length > 0 && password.length < 8 && (
+            <p className='text-xs text-destructive'>密码至少 8 位</p>
+          )}
+        </div>
+        <div className='space-y-1.5'>
+          <Label>确认密码</Label>
+          <Input
+            type='password'
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+          />
+          {confirm.length > 0 && password !== confirm && (
+            <p className='text-xs text-destructive'>两次输入的密码不一致</p>
+          )}
         </div>
         <div className='flex items-center justify-between rounded-lg border p-3'>
           <div>
             <p className='text-sm font-medium'>管理员</p>
-            <p className='text-xs text-muted-foreground'>拥有全部端点权限，不受权限开关限制</p>
+            <p className='text-xs text-muted-foreground'>
+              管理员可管理所有实例和用户；普通用户只能使用被分配的实例
+            </p>
           </div>
           <Switch checked={isAdmin} onCheckedChange={setIsAdmin} />
         </div>
@@ -292,99 +336,178 @@ function CreateAccountDialog(props: { open: boolean; onOpenChange: (open: boolea
   )
 }
 
-// ---------- 权限开关 ----------
-function PermissionsDialog(props: {
-  account: AccountInfo
+// ---------- 分配实例 ----------
+function AssignInstancesDialog(props: {
+  user: LocalUser
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const queryClient = useQueryClient()
-  const { data: catalog, isLoading } = useQuery({
-    queryKey: ['perm-catalog'],
-    queryFn: getPermCatalog,
+  const ready = useNodeReady()
+  const { data, isLoading } = useQuery({
+    queryKey: ['instances-all'],
+    queryFn: () => getInstances({ page: 1, page_size: 500 }),
+    enabled: ready,
   })
-  const [perms, setPerms] = useState<Record<string, boolean>>(
-    props.account.permissions ?? {}
+  const instances = data?.data ?? []
+  const [selected, setSelected] = useState<Set<string>>(
+    new Set(props.user.assignedInstances ?? [])
   )
 
-  const mutation = useMutation({
-    mutationFn: () => setAccountPermissions(props.account.username, perms),
-    onSuccess: () => {
-      toast.success('权限已保存')
-      queryClient.invalidateQueries({ queryKey: ['accounts'] })
-      props.onOpenChange(false)
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : '保存失败'),
-  })
-
-  const toggle = (pattern: string) => {
-    setPerms((prev) => ({ ...prev, [pattern]: !prev[pattern] }))
-  }
-
-  const setGroup = (group: string, value: boolean) => {
-    if (!catalog) return
-    const g = catalog.find((c) => c.group === group)
-    if (!g) return
-    setPerms((prev) => {
-      const next = { ...prev }
-      for (const e of g.entries) next[e.pattern] = value
+  const toggle = (uuid: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(uuid)) next.delete(uuid)
+      else next.add(uuid)
       return next
     })
+  }
+
+  const handleSave = () => {
+    try {
+      updateUserInstances(props.user.username, [...selected])
+      toast.success(`已为「${props.user.username}」分配 ${selected.size} 个实例`)
+      usePanelAuthStore.setState({})
+      props.onOpenChange(false)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存失败')
+    }
   }
 
   return (
     <Dialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={`端点权限：${props.account.username}`}
-      description='控制该账户可访问的 API 端点；未列出的操作一律拒绝'
-      className='max-w-2xl'
+      title={`分配实例：${props.user.username}`}
+      description='选中的实例将对该用户可见可操作；未选中的实例该用户无法访问'
+      className='max-w-xl'
       footer={
         <>
-          <Button variant='outline' onClick={() => props.onOpenChange(false)}>取消</Button>
-          <Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>
-            {mutation.isPending ? '保存中…' : '保存权限'}
+          <Button variant='outline' onClick={() => props.onOpenChange(false)}>
+            取消
           </Button>
+          <Button onClick={handleSave}>保存分配</Button>
         </>
       }
     >
-      {isLoading ? (
-        <LoadingState />
-      ) : !catalog ? (
-        <EmptyState title='无法加载权限目录' />
+      {!ready ? (
+        <div className='py-8 text-center text-sm text-muted-foreground'>
+          请先连接节点，才能选择实例分配给用户
+        </div>
+      ) : isLoading ? (
+        <LoadingState text='加载实例列表中…' />
+      ) : instances.length === 0 ? (
+        <EmptyState title='节点上暂无实例' description='先在实例管理中创建实例后再分配' />
       ) : (
-        <div className='max-h-[55vh] space-y-4 overflow-y-auto pr-1'>
-          {catalog.map((group) => (
-            <div key={group.group} className='rounded-lg border'>
-              <div className='flex items-center justify-between border-b bg-muted/40 px-3 py-2'>
-                <span className='text-sm font-medium'>{group.group}</span>
-                <div className='flex gap-2'>
-                  <Button variant='ghost' size='xs' onClick={() => setGroup(group.group, true)}>
-                    全选
-                  </Button>
-                  <Button variant='ghost' size='xs' onClick={() => setGroup(group.group, false)}>
-                    全不选
-                  </Button>
-                </div>
+        <div className='max-h-[50vh] space-y-1 overflow-y-auto'>
+          {instances.map((inst) => (
+            <label
+              key={inst.instanceUuid}
+              className='flex items-center gap-3 rounded-lg border p-3 hover:bg-accent/50 cursor-pointer'
+            >
+              <Checkbox
+                checked={selected.has(inst.instanceUuid)}
+                onCheckedChange={() => toggle(inst.instanceUuid)}
+              />
+              <div className='min-w-0 flex-1'>
+                <p className='truncate text-sm font-medium'>
+                  {inst.config.nickname || '未命名实例'}
+                </p>
+                <p className='truncate text-xs text-muted-foreground'>{inst.config.cwd}</p>
               </div>
-              <div className='divide-y'>
-                {group.entries.map((entry) => (
-                  <div key={entry.pattern} className='flex items-center justify-between gap-3 px-3 py-2'>
-                    <div className='min-w-0'>
-                      <p className='truncate text-sm'>{entry.description}</p>
-                      <p className='truncate font-mono text-xs text-muted-foreground'>{entry.pattern}</p>
-                    </div>
-                    <Switch
-                      checked={Boolean(perms[entry.pattern])}
-                      onCheckedChange={() => toggle(entry.pattern)}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
+              <Badge variant='outline'>{inst.config.type}</Badge>
+            </label>
           ))}
         </div>
       )}
+    </Dialog>
+  )
+}
+
+// ---------- 修改密码（独立卡片） ----------
+export function ChangePasswordCard() {
+  const panelUser = usePanelAuthStore((s) => s.user)
+  const [oldPassword, setOldPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async () => {
+    if (!panelUser) return
+    if (newPassword.length < 8) {
+      toast.error('新密码至少 8 位')
+      return
+    }
+    if (newPassword !== confirm) {
+      toast.error('两次输入的新密码不一致')
+      return
+    }
+    setLoading(true)
+    try {
+      await changeLocalPassword(panelUser.username, oldPassword, newPassword)
+      toast.success('密码已修改')
+      setOldPassword('')
+      setNewPassword('')
+      setConfirm('')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '修改失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Card className='max-w-md'>
+      <CardContent className='space-y-4 pt-5'>
+        <div>
+          <p className='font-medium'>修改密码</p>
+          <p className='text-sm text-muted-foreground'>修改当前登录账户的密码</p>
+        </div>
+        <div className='space-y-1.5'>
+          <Label>旧密码</Label>
+          <Input
+            type='password'
+            value={oldPassword}
+            onChange={(e) => setOldPassword(e.target.value)}
+          />
+        </div>
+        <div className='space-y-1.5'>
+          <Label>新密码</Label>
+          <Input
+            type='password'
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+          />
+          {newPassword.length > 0 && newPassword.length < 8 && (
+            <p className='text-xs text-destructive'>密码至少 8 位</p>
+          )}
+        </div>
+        <div className='space-y-1.5'>
+          <Label>确认新密码</Label>
+          <Input
+            type='password'
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+          />
+          {confirm.length > 0 && newPassword !== confirm && (
+            <p className='text-xs text-destructive'>两次输入的密码不一致</p>
+          )}
+        </div>
+        <Button
+          className='w-full'
+          disabled={!oldPassword || !newPassword || loading}
+          onClick={handleSubmit}
+        >
+          {loading ? '提交中…' : '修改密码'}
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function ChangePasswordDialog(props: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange} title='修改我的密码'>
+      <ChangePasswordCard />
     </Dialog>
   )
 }

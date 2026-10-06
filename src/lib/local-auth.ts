@@ -18,6 +18,8 @@ export interface LocalUser {
   salt: string
   isAdmin: boolean
   createdAt: number
+  /** 普通用户被分配的实例 uuid 列表；管理员不限制 */
+  assignedInstances?: string[]
 }
 
 function readUsers(): LocalUser[] {
@@ -95,13 +97,17 @@ export async function registerFirstUser(
 export async function addUser(
   username: string,
   password: string,
-  isAdmin: boolean
+  isAdmin: boolean,
+  assignedInstances?: string[]
 ): Promise<LocalUser> {
   const users = readUsers()
   if (users.some((u) => u.username === username)) {
     throw new Error('用户名已存在')
   }
   const user = await createUser(username, password, isAdmin)
+  if (!isAdmin) {
+    user.assignedInstances = assignedInstances ?? []
+  }
   writeUsers([...users, user])
   return user
 }
@@ -144,6 +150,30 @@ export function removeUser(username: string): void {
     throw new Error('不能删除最后一个管理员')
   }
   writeUsers(users.filter((u) => u.username !== username))
+}
+
+export function updateUserInstances(username: string, instances: string[]): void {
+  const users = readUsers()
+  const user = users.find((u) => u.username === username)
+  if (!user) throw new Error('用户不存在')
+  user.assignedInstances = instances
+  writeUsers(users)
+}
+
+export function updateUserRole(username: string, isAdmin: boolean): void {
+  const users = readUsers()
+  const user = users.find((u) => u.username === username)
+  if (!user) throw new Error('用户不存在')
+  if (!isAdmin && users.filter((u) => u.isAdmin && u.username !== username).length === 0) {
+    throw new Error('至少保留一个管理员')
+  }
+  user.isAdmin = isAdmin
+  if (isAdmin) {
+    user.assignedInstances = undefined
+  } else if (!user.assignedInstances) {
+    user.assignedInstances = []
+  }
+  writeUsers(users)
 }
 
 export async function changeLocalPassword(
