@@ -30,6 +30,9 @@
   --border: oklch(0.93 0 0);
   --input: oklch(0.93 0 0);
   --ring: oklch(0.708 0.16 249.003);
+  --overview-accent-1: oklch(0.72 0.18 250);
+  --overview-accent-2: oklch(0.65 0.15 200);
+  --overview-accent-3: oklch(0.7 0.12 280);
 }
 
 .dark {
@@ -58,6 +61,9 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 17%);
   --ring: oklch(0.554 0.148 250.726);
+  --overview-accent-1: oklch(0.76 0.14 250);
+  --overview-accent-2: oklch(0.76 0.13 200);
+  --overview-accent-3: oklch(0.76 0.13 285);
 }
 
 * {

@@ -1,8 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Activity,
   CheckCircle2,
+  Cpu,
   Globe,
+  HardDrive,
   KeyRound,
+  MemoryStick,
   Pencil,
   Plus,
   RefreshCw,
@@ -14,11 +18,12 @@ import { useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { ConfirmDialog, Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/misc'
+import { Label, Progress } from '@/components/ui/misc'
 import { ApiError, getOverview } from '@/lib/api'
+import { formatBytes, formatPercent, formatUptime } from '@/lib/utils'
 import { newId, useNodeStore, type NodeConnection } from '@/stores/node-store'
 
 /** 规范化节点地址 */
@@ -48,7 +53,7 @@ export function ConnectPage() {
         <div className='flex items-center gap-2'>
           <Server className='size-5 text-primary' />
           <div>
-            <h1 className='text-xl font-bold tracking-tight'>节点连接</h1>
+            <h1 className='text-2xl font-bold tracking-tight'>节点连接</h1>
             <p className='text-sm text-muted-foreground'>
               添加、切换、管理面板连接的 irix-node 后端节点
             </p>
@@ -108,7 +113,6 @@ export function ConnectPage() {
             url: data.url,
             apiKey: data.apiKey,
           })
-          // 切换到新节点并验证
           setActive(id)
           try {
             await getOverview()
@@ -167,7 +171,7 @@ export function ConnectPage() {
   )
 }
 
-// ---------- 节点卡片 ----------
+// ---------- 节点卡片（含性能信息） ----------
 function NodeCard(props: {
   node: NodeConnection
   active: boolean
@@ -176,81 +180,222 @@ function NodeCard(props: {
   onDelete: () => void
 }) {
   const { node, active } = props
-  const queryClient = useQueryClient()
 
-  // 对当前卡片对应的节点做连通性检测
+  // 每个节点卡片独立轮询 /api/overview 获取性能信息
+  // 需要临时切换 activeId 来让 axios 发向该节点
+  const { data, refetch, isFetching } = useQuery({
+    queryKey: ['node-overview', node.id],
+    queryFn: async () => {
+      const prev = useNodeStore.getState().activeId
+      useNodeStore.getState().setActive(node.id)
+      try {
+        return await getOverview()
+      } finally {
+        useNodeStore.getState().setActive(prev)
+      }
+    },
+    refetchInterval: 10000,
+    retry: false,
+  })
+
+  // 检测连通性（手动）
   const checkMutation = useMutation({
     mutationFn: async () => {
-      // 临时切换到该节点检测
-      const prevActive = useNodeStore.getState().activeId
+      const prev = useNodeStore.getState().activeId
       useNodeStore.getState().setActive(node.id)
       try {
         await getOverview()
       } finally {
-        useNodeStore.getState().setActive(prevActive)
+        useNodeStore.getState().setActive(prev)
       }
     },
     onSuccess: () => {
       toast.success(`${node.name} 在线`)
-      queryClient.invalidateQueries()
+      refetch()
     },
-    onError: (err) => toast.error(`${node.name} 不可达：${err instanceof Error ? err.message : ''}`),
+    onError: (err) =>
+      toast.error(`${node.name} 不可达：${err instanceof Error ? err.message : ''}`),
   })
+
+  const sys = data?.system
+  const remote = data?.remote?.[0]
+  const isOnline = remote?.available === true
 
   return (
     <Card className={active ? 'border-primary ring-1 ring-primary/20' : ''}>
-      <CardContent className='flex flex-wrap items-center gap-3 p-4'>
-        <button
-          onClick={props.onSelect}
-          className={`flex size-10 shrink-0 items-center justify-center rounded-lg transition-colors ${
-            active ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
-          }`}
-          title={active ? '当前选中' : '点击切换到此节点'}
-        >
-          {active ? <CheckCircle2 className='size-5' /> : <Globe className='size-5' />}
-        </button>
+      <CardContent className='p-4'>
+        {/* 第一行：基本信息 + 操作 */}
+        <div className='flex flex-wrap items-center gap-3'>
+          <button
+            onClick={props.onSelect}
+            className={`flex size-10 shrink-0 items-center justify-center rounded-lg transition-colors ${
+              active ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+            }`}
+            title={active ? '当前选中' : '点击切换到此节点'}
+          >
+            {active ? <CheckCircle2 className='size-5' /> : <Globe className='size-5' />}
+          </button>
 
-        <div className='min-w-0 flex-1'>
-          <div className='flex flex-wrap items-center gap-2'>
-            <button onClick={props.onSelect} className='font-semibold hover:text-primary'>
-              {node.name}
-            </button>
-            {active && <Badge>当前节点</Badge>}
+          <div className='min-w-0 flex-1'>
+            <div className='flex flex-wrap items-center gap-2'>
+              <button onClick={props.onSelect} className='font-semibold hover:text-primary'>
+                {node.name}
+              </button>
+              {active && <Badge>当前节点</Badge>}
+              {data && (
+                <Badge variant={isOnline ? 'success' : 'destructive'}>
+                  {isOnline ? '在线' : '离线'}
+                </Badge>
+              )}
+            </div>
+            <p className='mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground'>
+              <Globe className='size-3' />
+              {node.url.replace(/^https?:\/\//, '')}
+              <span className='mx-1'>·</span>
+              <KeyRound className='size-3' />
+              {node.apiKey.length} 位
+              {data?.version && (
+                <>
+                  <span className='mx-1'>·</span>v{data.version}
+                </>
+              )}
+            </p>
           </div>
-          <p className='mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground'>
-            <Globe className='size-3' />
-            {node.url.replace(/^https?:\/\//, '')}
-            <span className='mx-1'>·</span>
-            <KeyRound className='size-3' />
-            {node.apiKey.length} 位密钥
-          </p>
+
+          <div className='flex items-center gap-1'>
+            <Button
+              variant='outline'
+              size='sm'
+              disabled={checkMutation.isPending}
+              onClick={() => checkMutation.mutate()}
+            >
+              <RefreshCw className={isFetching ? 'animate-spin' : ''} />
+              检测
+            </Button>
+            <Button variant='ghost' size='sm' onClick={props.onEdit} title='编辑'>
+              <Pencil />
+            </Button>
+            <Button
+              variant='ghost'
+              size='sm'
+              className='text-muted-foreground hover:text-destructive'
+              onClick={props.onDelete}
+              title='删除'
+            >
+              <Trash2 />
+            </Button>
+          </div>
         </div>
 
-        <div className='flex items-center gap-1'>
-          <Button
-            variant='outline'
-            size='sm'
-            disabled={checkMutation.isPending}
-            onClick={() => checkMutation.mutate()}
-          >
-            <RefreshCw className={checkMutation.isPending ? 'animate-spin' : ''} />
-            检测
-          </Button>
-          <Button variant='ghost' size='sm' onClick={props.onEdit} title='编辑'>
-            <Pencil />
-          </Button>
-          <Button
-            variant='ghost'
-            size='sm'
-            className='text-muted-foreground hover:text-destructive'
-            onClick={props.onDelete}
-            title='删除'
-          >
-            <Trash2 />
-          </Button>
-        </div>
+        {/* 第二行：性能信息 */}
+        {sys ? (
+          <div className='mt-3 grid grid-cols-2 gap-3 border-t pt-3 sm:grid-cols-4'>
+            <NodeMetric
+              icon={<Cpu className='size-3.5' />}
+              label='CPU'
+              value={formatPercent(sys.cpuUsage)}
+              progress={sys.cpuUsage * 100}
+              tone='accent-1'
+            />
+            <NodeMetric
+              icon={<MemoryStick className='size-3.5' />}
+              label='内存'
+              value={formatPercent(sys.memUsage)}
+              detail={`${formatBytes(sys.totalmem - sys.freemem)} / ${formatBytes(sys.totalmem)}`}
+              progress={sys.memUsage * 100}
+              tone='accent-2'
+            />
+            <NodeMetric
+              icon={<HardDrive className='size-3.5' />}
+              label='磁盘'
+              value={formatPercent(sys.diskusage)}
+              detail={`${formatBytes(sys.diskused)} / ${formatBytes(sys.disktotal)}`}
+              progress={sys.diskusage * 100}
+              tone='accent-3'
+            />
+            <NodeMetric
+              icon={<Activity className='size-3.5' />}
+              label='运行时间'
+              value={formatUptime(sys.uptime)}
+              detail={`${sys.type} ${sys.version || ''}`}
+            />
+          </div>
+        ) : (
+          <div className='mt-3 border-t pt-3 text-center text-xs text-muted-foreground'>
+            {isFetching ? '正在获取性能数据…' : '暂无性能数据'}
+          </div>
+        )}
+
+        {/* 第三行：实例统计 */}
+        {remote && (
+          <div className='mt-3 flex items-center gap-4 border-t pt-3 text-sm'>
+            <div className='text-center'>
+              <p className='font-semibold tabular-nums'>{remote.instance.running}</p>
+              <p className='text-xs text-muted-foreground'>运行中</p>
+            </div>
+            <div className='text-center'>
+              <p className='font-semibold tabular-nums'>{remote.instance.total}</p>
+              <p className='text-xs text-muted-foreground'>总实例</p>
+            </div>
+            <div className='text-center'>
+              <p className='font-semibold tabular-nums'>
+                {formatBytes(sys?.networkDownload)}/s
+              </p>
+              <p className='text-xs text-muted-foreground'>下载</p>
+            </div>
+            <div className='text-center'>
+              <p className='font-semibold tabular-nums'>
+                {formatBytes(sys?.networkUpload)}/s
+              </p>
+              <p className='text-xs text-muted-foreground'>上传</p>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
+  )
+}
+
+// ---------- 节点性能指标子组件 ----------
+function NodeMetric(props: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  detail?: string
+  progress?: number
+  tone?: 'accent-1' | 'accent-2' | 'accent-3'
+}) {
+  const toneColor: Record<string, string> = {
+    'accent-1': 'var(--overview-accent-1)',
+    'accent-2': 'var(--overview-accent-2)',
+    'accent-3': 'var(--overview-accent-3)',
+  }
+  const color = props.tone ? toneColor[props.tone] : 'var(--primary)'
+
+  return (
+    <div className='space-y-1'>
+      <div className='flex items-center gap-1.5 text-xs text-muted-foreground'>
+        <span style={{ color }}>{props.icon}</span>
+        {props.label}
+      </div>
+      <p className='font-mono text-sm font-semibold tabular-nums'>{props.value}</p>
+      {props.detail && (
+        <p className='truncate text-xs text-muted-foreground' title={props.detail}>
+          {props.detail}
+        </p>
+      )}
+      {props.progress !== undefined && props.progress >= 0 && (
+        <div className='h-1.5 w-full overflow-hidden rounded-full bg-muted'>
+          <div
+            className='h-full rounded-full transition-all'
+            style={{
+              width: `${Math.min(100, props.progress)}%`,
+              background: color,
+            }}
+          />
+        </div>
+      )}
+    </div>
   )
 }
 
